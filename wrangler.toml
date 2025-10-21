@@ -10,7 +10,7 @@ compatibility_flags = ["nodejs_compat"]
 [[d1_databases]]
 binding = "DB"
 database_name = "anime_info"
-database_id = "4ea68080-166a-4819-b467-0255c6e044cc"
+database_id = "bc1bcde4-5db8-4860-a965-7fcb7a427475"
 
 [triggers]
 crons = ["0 * * * *"]
