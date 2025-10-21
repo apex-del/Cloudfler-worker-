@@ -1,0 +1,19 @@
+name = "erenworld-auto-db"
+main = "mainWorker.js"
+compatibility_date = "2025-10-21"
+
+# optional Node.js compat
+compatibility_flags = ["nodejs_compat"]
+
+# Do NOT include real database info here
+# We'll use secrets instead
+[[d1_databases]]
+binding = "DB"
+database_name = "erenworld_db"
+database_id = "REPLACE_WITH_YOUR_ID_LOCALLY"
+
+[triggers]
+crons = ["0 * * * *"]
+
+[vars]
+LOG_LEVEL = "info"
