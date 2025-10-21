@@ -9,8 +9,8 @@ compatibility_flags = ["nodejs_compat"]
 # We'll use secrets instead
 [[d1_databases]]
 binding = "DB"
-database_name = "erenworld_db"
-database_id = "REPLACE_WITH_YOUR_ID_LOCALLY"
+database_name = "anime_info"
+database_id = "4ea68080-166a-4819-b467-0255c6e044cc"
 
 [triggers]
 crons = ["0 * * * *"]
