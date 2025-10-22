@@ -1,4 +1,4 @@
-name = "erenworld-auto-db"
+name = "db0worker"
 main = "mainWorker.js"
 compatibility_date = "2025-10-21"
 
