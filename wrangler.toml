@@ -1,13 +1,19 @@
-name = "db0worker"
-main = "worker.js"
+name = "anime-details-worker"
+main = "anime-details-worker.js"
 compatibility_date = "2025-10-21"
 
 compatibility_flags = ["nodejs_compat"]
 
 [[d1_databases]]
 binding = "DB"
-database_name = "anime_home_data"
+database_name = "anime_details_data"
 database_id = "913b4db3-55f6-47ea-a96d-6b21dd117faf"
 
 [triggers]
-crons = ["0 */1 * * *"]
+crons = ["0 * * * *"]  # Run every hour
+
+[vars]
+BATCH_SIZE = "100"
+CONCURRENT_REQUESTS = "5"
+
+
