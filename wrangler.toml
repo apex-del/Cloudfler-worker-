@@ -1,19 +1,13 @@
 name = "db0worker"
-main = "mainWorker.js"
+main = "worker.js"
 compatibility_date = "2025-10-21"
 
-# optional Node.js compat
 compatibility_flags = ["nodejs_compat"]
 
-# Do NOT include real database info here
-# We'll use secrets instead
 [[d1_databases]]
 binding = "DB"
-database_name = "anime_info"
-database_id = "bc1bcde4-5db8-4860-a965-7fcb7a427475"
+database_name = "anime_home_data"
+database_id = "913b4db3-55f6-47ea-a96d-6b21dd117faf"
 
 [triggers]
-crons = ["0 * * * *"]
-
-[vars]
-LOG_LEVEL = "info"
+crons = ["*/30 * * * *"]
