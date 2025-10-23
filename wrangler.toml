@@ -10,4 +10,4 @@ database_name = "anime_home_data"
 database_id = "913b4db3-55f6-47ea-a96d-6b21dd117faf"
 
 [triggers]
-crons = ["*/30 * * * *"]
+crons = ["0 */1 * * *"]
