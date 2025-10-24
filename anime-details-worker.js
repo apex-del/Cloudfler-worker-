@@ -102,13 +102,13 @@ async function initTables(env) {
     // Progress table
     await env.DB.prepare(`
         CREATE TABLE IF NOT EXISTS progress (
-            last_id INTEGER DEFAULT 0
+            last_id INTEGER DEFAULT 1
         )
     `).run();
 
     // Insert default progress if not exists
     await env.DB.prepare(`
-        INSERT OR IGNORE INTO progress (last_id) VALUES (0)
+        INSERT OR IGNORE INTO progress (last_id) VALUES (1)
     `).run();
 }
 
