@@ -1,4 +1,4 @@
-name = "anime-details-worker"
+name = "db0worker"
 main = "anime-details-worker.js"
 compatibility_date = "2025-10-21"
 
