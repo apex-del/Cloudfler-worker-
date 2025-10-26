@@ -2,7 +2,6 @@ export default {
   async scheduled(event, env, ctx) {
     ctx.waitUntil(runBatch(env));
   },
-
   async fetch(request, env) {
     return new Response("⚙️ ErenWorld Worker is running fine!");
   },
@@ -14,7 +13,7 @@ const BATCH_SIZE = 100;
 async function runBatch(env) {
   const db = env.DB;
 
-  // 🧱 Auto-create tables if not exist
+  // 1️⃣ Create tables if they don't exist
   await db.exec(`
     CREATE TABLE IF NOT EXISTS anime (
       anime_id TEXT PRIMARY KEY,
@@ -54,21 +53,21 @@ async function runBatch(env) {
     INSERT OR IGNORE INTO meta (key, value) VALUES ('last_id', '0');
   `);
 
-  // 🧠 Get last stored ID
+  // 2️⃣ Get last processed ID
   const metaRow = await db.prepare("SELECT value FROM meta WHERE key = 'last_id'").first();
-  let lastId = parseInt(metaRow?.value?.replace('one-piece-', '') || "0");
-  let startId = lastId + 1;
-  let endId = startId + BATCH_SIZE - 1;
+  let lastId = parseInt(metaRow?.value || "0");
+  const startId = lastId + 1;
+  const endId = startId + BATCH_SIZE - 1;
 
-  console.log(`🚀 Starting batch: one-piece-${startId} → one-piece-${endId}`);
+  console.log(`🚀 Processing batch: ${startId} → ${endId}`);
 
   for (let id = startId; id <= endId; id++) {
-    const anime_id = `one-piece-${id}`;
     const url = `${BASE_URL}${id}`;
     console.log(`🌐 Fetching: ${url}`);
 
     try {
       const response = await fetch(url, { timeout: 20000 });
+
       if (!response.ok) {
         console.warn(`❌ HTTP ${response.status} for ${url}`);
         continue;
@@ -82,7 +81,6 @@ async function runBatch(env) {
         continue;
       }
 
-      // 📝 Insert into D1
       await db.prepare(`
         INSERT OR REPLACE INTO anime (
           anime_id, title, alternativeTitle, japanese, poster, rating, type, is18Plus,
@@ -90,50 +88,50 @@ async function runBatch(env) {
           aired_from, aired_to, premiered, duration, status, MAL_score,
           genres, studios, producers,
           moreSeasons_json, related_json, mostPopular_json, recommended_json, raw_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .bind(
-        anime.id || anime_id,
-        anime.title || "",
-        anime.alternativeTitle || "",
-        anime.japanese || "",
-        anime.poster || "",
-        anime.rating || "",
-        anime.type || "",
-        anime.is18Plus ? 1 : 0,
-        anime.episodes?.sub || 0,
-        anime.episodes?.dub || 0,
-        anime.episodes?.eps || 0,
-        anime.synopsis || "",
-        anime.synonyms || "",
-        anime.aired?.from || "",
-        anime.aired?.to || "",
-        anime.premiered || "",
-        anime.duration || "",
-        anime.status || "",
-        anime.MAL_score || "",
-        Array.isArray(anime.genres) ? anime.genres.join(", ") : anime.genres || "",
-        Array.isArray(anime.studios) ? anime.studios.join(", ") : anime.studios || "",
-        Array.isArray(anime.producers) ? anime.producers.join(", ") : anime.producers || "",
-        JSON.stringify(anime.moreSeasons || []),
-        JSON.stringify(anime.related || []),
-        JSON.stringify(anime.mostPopular || []),
-        JSON.stringify(anime.recommended || []),
-        JSON.stringify(anime)
+        anime?.id || null,
+        anime?.title || null,
+        anime?.alternativeTitle || null,
+        anime?.japanese || null,
+        anime?.poster || null,
+        anime?.rating || null,
+        anime?.type || null,
+        anime?.is18Plus ? 1 : 0,
+        anime?.episodes?.sub || 0,
+        anime?.episodes?.dub || 0,
+        anime?.episodes?.eps || 0,
+        anime?.synopsis || null,
+        anime?.synonyms || null,
+        anime?.aired?.from || null,
+        anime?.aired?.to || null,
+        anime?.premiered || null,
+        anime?.duration || null,
+        anime?.status || null,
+        anime?.MAL_score || null,
+        Array.isArray(anime?.genres) ? anime.genres.join(", ") : anime?.genres || "",
+        Array.isArray(anime?.studios) ? anime.studios.join(", ") : anime?.studios || "",
+        Array.isArray(anime?.producers) ? anime.producers.join(", ") : anime?.producers || "",
+        JSON.stringify(anime?.moreSeasons || []),
+        JSON.stringify(anime?.related || []),
+        JSON.stringify(anime?.mostPopular || []),
+        JSON.stringify(anime?.recommended || []),
+        JSON.stringify(anime || {})
       )
       .run();
 
-      console.log(`✅ Saved: ${anime.title || anime_id}`);
-
-      // 🔄 Update last_id only after successful insert
-      await db.prepare("UPDATE meta SET value = ? WHERE key = 'last_id'")
-        .bind(anime_id)
-        .run();
-
+      console.log(`✅ Saved ${url} (${anime.title || "No title"})`);
     } catch (err) {
       console.error(`💥 Error fetching ${url}:`, err.message || err);
     }
   }
 
+  // 3️⃣ Update last processed ID
+  await db.prepare("UPDATE meta SET value = ? WHERE key = 'last_id'")
+    .bind(String(endId))
+    .run();
+
   console.log(`🎯 Finished batch up to one-piece-${endId}`);
-}
+    }
