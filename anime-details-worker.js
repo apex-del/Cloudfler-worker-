@@ -1,13 +1,12 @@
 export default {
   async scheduled(event, env) {
-    await handleCron(env)
+    await safeRun(env)
   },
 
   async fetch(request, env) {
     const url = new URL(request.url)
     if (url.pathname === "/test") {
-      await ensureTables(env)
-      await handleCron(env, true)
+      await safeRun(env, true)
       return new Response("✅ Test run complete", { status: 200 })
     }
     return new Response("Not found", { status: 404 })
@@ -15,87 +14,109 @@ export default {
 }
 
 const BASE_URL = "https://erenworld-proxy.onrender.com/api/v1/anime/one-piece-"
-const MAX_PER_CRON = 70
-const BATCH_SIZE = 10
-const WAIT_BETWEEN_BATCHES = 2500 // 2.5s
+const BATCH_LIMIT = 50
+const DELAY = 2000 // 2 seconds delay between each fetch
 
-async function handleCron(env, testMode = false) {
-  const db = env.DB
-  await ensureTables(env)
+async function safeRun(env, test = false) {
+  try {
+    const db = env.DB
+    await initTables(db)
 
-  const meta = await db.prepare("SELECT last_id FROM meta WHERE name = 'progress'").first()
-  let startId = meta?.last_id || 1
-  let endId = startId + MAX_PER_CRON - 1
+    const meta = await db.prepare("SELECT last_id FROM meta WHERE name='progress'").first()
+    let startId = meta?.last_id || 1
+    const endId = startId + BATCH_LIMIT - 1
 
-  console.log(`🚀 Starting from ID ${startId} → ${endId}`)
+    console.log(`🚀 Fetching anime ${startId} → ${endId}`)
 
-  for (let i = startId; i <= endId; i += BATCH_SIZE) {
-    const batch = Array.from({ length: Math.min(BATCH_SIZE, endId - i + 1) }, (_, k) => i + k)
-    console.log(`📦 Fetching batch ${batch.join(", ")}`)
-
-    for (const id of batch) {
-      const url = `${BASE_URL}${id}`
-      try {
-        const res = await fetch(url)
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const json = await res.json()
-        const data = json?.data || {}
-
-        await db.prepare(`
-          INSERT OR REPLACE INTO anime (id, title, synopsis, image, rating, type, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).bind(
-          id,
-          data.title || "",
-          data.synopsis || "",
-          data.image || "",
-          data.rating || "",
-          data.type || "",
-          data.status || ""
-        ).run()
-
-        console.log(`✅ Saved ID ${id}`)
-      } catch (err) {
-        console.error(`⚠️ Failed ID ${id}: ${err.message}`)
+    for (let id = startId; id <= endId; id++) {
+      const ok = await fetchAndSaveAnime(db, id)
+      if (ok) {
+        await db.prepare(`UPDATE meta SET last_id = ? WHERE name='progress'`).bind(id).run()
       }
+      await sleep(DELAY)
     }
 
-    const lastDone = batch.at(-1)
-    await db.prepare(`UPDATE meta SET last_id = ? WHERE name = 'progress'`).bind(lastDone).run()
-
-    console.log(`🕒 Wait ${WAIT_BETWEEN_BATCHES / 1000}s before next batch...`)
-    await new Promise(r => setTimeout(r, WAIT_BETWEEN_BATCHES))
+    console.log("✅ Batch complete!")
+  } catch (err) {
+    console.error("❌ Worker crashed:", err)
   }
-
-  console.log("✅ Done all batches!")
-  if (testMode) return new Response("✅ Test complete", { status: 200 })
 }
 
-async function ensureTables(env) {
-  const db = env.DB
+async function initTables(db) {
+  try {
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS anime (
+        id INTEGER PRIMARY KEY,
+        title TEXT,
+        synopsis TEXT,
+        image TEXT,
+        rating TEXT,
+        type TEXT,
+        status TEXT
+      )
+    `).run()
 
-  await db.prepare(`
-    CREATE TABLE IF NOT EXISTS anime (
-      id INTEGER PRIMARY KEY,
-      title TEXT,
-      synopsis TEXT,
-      image TEXT,
-      rating TEXT,
-      type TEXT,
-      status TEXT
-    );
-  `).run()
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS meta (
+        name TEXT PRIMARY KEY,
+        last_id INTEGER DEFAULT 1
+      )
+    `).run()
 
-  await db.prepare(`
-    CREATE TABLE IF NOT EXISTS meta (
-      name TEXT PRIMARY KEY,
-      last_id INTEGER DEFAULT 1
-    );
-  `).run()
-
-  const meta = await db.prepare("SELECT * FROM meta WHERE name = 'progress'").first()
-  if (!meta) {
-    await db.prepare("INSERT INTO meta (name, last_id) VALUES ('progress', 1)").run()
-    console.log("📊 Initialized meta table.")
+    const check = await db.prepare("SELECT name FROM meta WHERE name='progress'").first()
+    if (!check) {
+      await db.prepare("INSERT INTO meta (name, last_id) VALUES ('progress', 1)").run()
+      console.log("🆕 Initialized meta table.")
+    }
+  } catch (err) {
+    console.error("⚠️ Error creating tables:", err)
   }
+}
+
+async function fetchAndSaveAnime(db, id) {
+  const url = `${BASE_URL}${id}`
+  try {
+    const res = await fetch(url, { cf: { cacheTtl: 0 } })
+    if (!res.ok) {
+      console.warn(`⚠️ Skipped ${id}: HTTP ${res.status}`)
+      return false
+    }
+
+    let json
+    try {
+      json = await res.json()
+    } catch {
+      console.warn(`⚠️ Invalid JSON for ${id}`)
+      return false
+    }
+
+    const data = json?.data || {}
+    if (!data.title) {
+      console.warn(`⚠️ Missing data for ${id}`)
+      return false
+    }
+
+    await db.prepare(`
+      INSERT OR REPLACE INTO anime (id, title, synopsis, image, rating, type, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      id,
+      data.title || "",
+      data.synopsis || "",
+      data.image || "",
+      data.rating || "",
+      data.type || "",
+      data.status || ""
+    ).run()
+
+    console.log(`✅ Saved: ${data.title} (ID ${id})`)
+    return true
+  } catch (err) {
+    console.error(`❌ Failed ${id}: ${err.message}`)
+    return false
+  }
+}
+
+function sleep(ms) {
+  return new Promise(res => setTimeout(res, ms))
 }
