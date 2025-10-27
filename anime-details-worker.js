@@ -1,124 +1,101 @@
 export default {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runBatch(env));
+    ctx.waitUntil(main(env));
   },
-  async fetch(request, env) {
-    return new Response("⚙️ ErenWorld Worker is running fine!");
+  async fetch(req, env) {
+    return new Response("✅ ErenWorld Worker running");
   },
 };
 
 const BASE_URL = "https://erenworld-proxy.onrender.com/api/v1/anime/one-piece-";
-const TOTAL_BATCH = 70;           // fetch 70 anime per cron
-const CONCURRENT_REQUESTS = 7;    // 7 at a time
-const BATCH_DELAY = 300;          // ms delay between batches
+const TOTAL_BATCH = 70;
+const CONCURRENT = 7;
+const DELAY = 300;
 
-async function runBatch(env) {
+async function main(env) {
   const db = env.DB;
 
-  // 1️⃣ Auto-create tables
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS anime (
-      anime_id TEXT PRIMARY KEY,
-      title TEXT,
-      alternativeTitle TEXT,
-      japanese TEXT,
-      poster TEXT,
-      rating TEXT,
-      type TEXT,
-      is18Plus INTEGER,
-      episodes_sub INTEGER,
-      episodes_dub INTEGER,
-      episodes_eps INTEGER,
-      synopsis TEXT,
-      synonyms TEXT,
-      aired_from TEXT,
-      aired_to TEXT,
-      premiered TEXT,
-      duration TEXT,
-      status TEXT,
-      MAL_score TEXT,
-      genres TEXT,
-      studios TEXT,
-      producers TEXT,
-      moreSeasons_json TEXT,
-      related_json TEXT,
-      mostPopular_json TEXT,
-      recommended_json TEXT,
-      raw_json TEXT
-    );
+  // ✅ Auto-create tables (safe batch)
+  await db.batch([
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS anime (
+        anime_id TEXT PRIMARY KEY,
+        title TEXT,
+        alternativeTitle TEXT,
+        japanese TEXT,
+        poster TEXT,
+        rating TEXT,
+        type TEXT,
+        is18Plus INTEGER,
+        episodes_sub INTEGER,
+        episodes_dub INTEGER,
+        episodes_eps INTEGER,
+        synopsis TEXT,
+        synonyms TEXT,
+        aired_from TEXT,
+        aired_to TEXT,
+        premiered TEXT,
+        duration TEXT,
+        status TEXT,
+        MAL_score TEXT,
+        genres TEXT,
+        studios TEXT,
+        producers TEXT,
+        moreSeasons_json TEXT,
+        related_json TEXT,
+        mostPopular_json TEXT,
+        recommended_json TEXT,
+        raw_json TEXT
+      )
+    `),
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      )
+    `),
+    db.prepare(`INSERT OR IGNORE INTO meta (key, value) VALUES ('last_id', '0')`)
+  ]);
 
-    CREATE TABLE IF NOT EXISTS meta (
-      key TEXT PRIMARY KEY,
-      value TEXT
-    );
+  // ✅ Get last id
+  const meta = await db.prepare(`SELECT value FROM meta WHERE key='last_id'`).first();
+  let currentId = parseInt(meta?.value || "0") + 1;
 
-    INSERT OR IGNORE INTO meta (key, value) VALUES ('last_id', '0');
-  `);
+  console.log(`🚀 Starting from ${currentId}`);
 
-  // 2️⃣ Get last processed ID
-  const metaRow = await db.prepare("SELECT value FROM meta WHERE key = 'last_id'").first();
-  let lastId = parseInt(metaRow?.value || "0");
-  let currentId = lastId + 1;
+  // 🔥 Wake Render
+  await safeFetch(`${BASE_URL}${currentId}`);
 
-  console.log(`🚀 Starting batch from one-piece-${currentId} ...`);
-
-  // 3️⃣ Wake-up first request
-  try {
-    const first = await fetch(`${BASE_URL}${currentId}`);
-    await first.json(); // just to wake up
-    console.log(`☕ First anime fetched to wake up render`);
-  } catch (err) {
-    console.error(`💥 Error waking up first anime:`, err.message || err);
-  }
-
-  // 4️⃣ Fetch 70 anime in small concurrent batches
-  let remaining = TOTAL_BATCH;
-
-  while (remaining > 0) {
-    const batchCount = Math.min(CONCURRENT_REQUESTS, remaining);
+  // ✅ Fetch batches safely
+  for (let done = 0; done < TOTAL_BATCH; done += CONCURRENT) {
     const promises = [];
-
-    for (let i = 0; i < batchCount; i++) {
+    for (let i = 0; i < CONCURRENT; i++) {
       const id = currentId + i;
-      promises.push(fetchAnime(id, db));
+      promises.push(storeAnime(id, db));
     }
-
-    const results = await Promise.allSettled(promises);
-    results.forEach(res => {
-      if (res.status === "fulfilled" && res.value) console.log(`✅ Stored anime ${res.value.anime_id}`);
-    });
-
-    currentId += batchCount;
-    remaining -= batchCount;
-
-    // small pause between batches to avoid API hot-limit
-    await new Promise(r => setTimeout(r, BATCH_DELAY));
+    await Promise.all(promises);
+    currentId += CONCURRENT;
+    await sleep(DELAY);
   }
 
-  // 5️⃣ Update last processed ID
-  await db.prepare("UPDATE meta SET value = ? WHERE key = 'last_id'")
+  await db.prepare(`UPDATE meta SET value=? WHERE key='last_id'`)
     .bind(String(currentId - 1))
     .run();
 
-  console.log(`🎯 Finished batch up to one-piece-${currentId - 1}`);
+  console.log(`✅ Done till ${currentId - 1}`);
 }
 
-// Helper: fetch and save a single anime
-async function fetchAnime(id, db) {
+async function storeAnime(id, db) {
   const url = `${BASE_URL}${id}`;
   try {
-    const response = await fetch(url, { timeout: 20000 });
-    if (!response.ok) {
-      console.warn(`❌ HTTP ${response.status} for ${url}`);
-      return null;
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.warn(`❌ ${res.status} for ${url}`);
+      return;
     }
-
-    const json = await response.json();
+    const json = await res.json();
     const anime = json?.data?.data;
-    if (!anime) {
-      console.warn(`⚠️ No valid data for ${url}`);
-      return null;
-    }
+    if (!anime) return;
 
     await db.prepare(`
       INSERT OR REPLACE INTO anime (
@@ -128,8 +105,7 @@ async function fetchAnime(id, db) {
         genres, studios, producers,
         moreSeasons_json, related_json, mostPopular_json, recommended_json, raw_json
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    .bind(
+    `).bind(
       anime.id,
       anime.title,
       anime.alternativeTitle,
@@ -141,28 +117,39 @@ async function fetchAnime(id, db) {
       anime.episodes?.sub || 0,
       anime.episodes?.dub || 0,
       anime.episodes?.eps || 0,
-      anime.synopsis || null,
-      anime.synonyms || null,
-      anime.aired?.from || null,
-      anime.aired?.to || null,
-      anime.premiered || null,
-      anime.duration || null,
-      anime.status || null,
-      anime.MAL_score || null,
-      Array.isArray(anime.genres) ? anime.genres.join(", ") : anime.genres || "",
-      Array.isArray(anime.studios) ? anime.studios.join(", ") : anime.studios || "",
-      Array.isArray(anime.producers) ? anime.producers.join(", ") : anime.producers || "",
+      anime.synopsis || "",
+      anime.synonyms || "",
+      anime.aired?.from || "",
+      anime.aired?.to || "",
+      anime.premiered || "",
+      anime.duration || "",
+      anime.status || "",
+      anime.MAL_score || "",
+      Array.isArray(anime.genres) ? anime.genres.join(",") : anime.genres || "",
+      Array.isArray(anime.studios) ? anime.studios.join(",") : anime.studios || "",
+      Array.isArray(anime.producers) ? anime.producers.join(",") : anime.producers || "",
       JSON.stringify(anime.moreSeasons || []),
       JSON.stringify(anime.related || []),
       JSON.stringify(anime.mostPopular || []),
       JSON.stringify(anime.recommended || []),
       JSON.stringify(anime)
-    )
-    .run();
+    ).run();
 
-    return anime;
-  } catch (err) {
-    console.error(`💥 Error fetching ${url}:`, err.message || err);
+    console.log(`✅ Saved one-piece-${id}`);
+  } catch (e) {
+    console.error(`⚠️ ${url}: ${e.message}`);
+  }
+}
+
+async function safeFetch(url) {
+  try {
+    const res = await fetch(url);
+    return await res.json();
+  } catch (_) {
     return null;
   }
 }
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+                                }
