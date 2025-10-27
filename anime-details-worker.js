@@ -1,120 +1,102 @@
 export default {
   async scheduled(event, env) {
-    try {
-      await initTables(env);
-      await fetchNextBatch(env);
-    } catch (err) {
-      console.error("❌ Cron failed:", err);
-    }
+    await handleCron(env)
   },
-};
-
-// ================= CONFIG =================
-const BASE_URL = "https://erenworld-proxy.onrender.com/api/v1";
-const BATCH_SIZE = 10;  // fetch 10 at a time (safe)
-const RANGE_SIZE = 70;  // process 70 per cron (increase later if stable)
-
-// ================= MAIN =================
-async function fetchNextBatch(env) {
-  // get last inserted id
-  const { results } = await env.DB.prepare("SELECT MAX(id) AS lastId FROM anime").all();
-  const lastId = results?.[0]?.lastId || 0;
-  const start = lastId + 1;
-  const end = start + RANGE_SIZE - 1;
-
-  console.log(`🚀 Fetching range ${start} → ${end}`);
-
-  for (let batchStart = start; batchStart <= end; batchStart += BATCH_SIZE) {
-    const batchEnd = Math.min(batchStart + BATCH_SIZE - 1, end);
-    const ids = Array.from({ length: batchEnd - batchStart + 1 }, (_, i) => batchStart + i);
-
-    console.log(`📦 Fetching IDs ${batchStart} → ${batchEnd}`);
-
-    await Promise.all(
-      ids.map(async (id) => {
-        try {
-          const res = await fetch(`${BASE_URL}/anime/${id}`);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-          const json = await res.json();
-          const a = json?.data || {};
-
-          const safe = {
-            id,
-            title: a.title || "",
-            altTitle: a.alternativeTitle || "",
-            japanese: a.japanese || "",
-            synopsis: a.synopsis || "",
-            image: a.image || "",
-            status: a.status || "",
-            totalEpisodes: a.totalEpisodes || "",
-            type: a.type || "",
-            releaseDate: a.releaseDate || "",
-            subOrDub: a.subOrDub || "",
-            url: a.url || "",
-          };
-
-          await saveAnime(env, safe);
-          console.log(`✅ Saved Anime ID ${id}`);
-        } catch (err) {
-          console.warn(`⚠️ Skipped ID ${id}: ${err.message}`);
-        }
-      })
-    );
-
-    // prevent rate limit
-    await sleep(2000);
-  }
-
-  console.log(`🏁 Finished range ${start} → ${end}`);
+  async fetch(request, env) {
+    const url = new URL(request.url)
+    if (url.pathname === "/test") {
+      await ensureTables(env)
+      await handleCron(env, true)
+      return new Response("✅ Test run complete", { status: 200 })
+    }
+    return new Response("Not found", { status: 404 })
+  },
 }
 
-// ================= DB =================
-async function initTables(env) {
-  const createAnimeTable = `
+const BASE_URL = "https://erenworld-proxy.onrender.com/api/v1/anime/one-piece-"
+const MAX_PER_CRON = 70
+const BATCH_SIZE = 10
+const WAIT_BETWEEN_BATCHES = 2500 // 2.5s between batches
+
+// ========== MAIN CRON HANDLER ==========
+async function handleCron(env, testMode = false) {
+  const db = env.DB
+  await ensureTables(env)
+
+  // get last processed id
+  let { results } = await db.prepare("SELECT last_id FROM meta WHERE name = 'progress'").first()
+  let startId = results ? results : 1
+  let endId = startId + MAX_PER_CRON - 1
+
+  console.log(`🚀 Starting from ID ${startId} → ${endId}`)
+
+  for (let i = startId; i <= endId; i += BATCH_SIZE) {
+    const batch = Array.from({ length: Math.min(BATCH_SIZE, endId - i + 1) }, (_, k) => i + k)
+    console.log(`📦 Fetching batch ${batch.join(", ")}`)
+
+    const results = []
+    for (const id of batch) {
+      const url = `${BASE_URL}${id}`
+      try {
+        const res = await fetch(url)
+        if (!res.ok) throw new Error(`❌ ${res.status}`)
+        const json = await res.json()
+        const data = json.data || {}
+        await db.prepare(`
+          INSERT INTO anime (id, title, synopsis, image, rating, type, status)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          id,
+          data.title || "",
+          data.synopsis || "",
+          data.image || "",
+          data.rating || "",
+          data.type || "",
+          data.status || ""
+        ).run()
+
+        console.log(`✅ Saved ID ${id}`)
+      } catch (err) {
+        console.error(`⚠️ Error for ID ${id}: ${err.message}`)
+      }
+    }
+
+    await db.prepare(`UPDATE meta SET last_id = ? WHERE name = 'progress'`).bind(batch.at(-1)).run()
+
+    console.log(`🕒 Waiting ${WAIT_BETWEEN_BATCHES / 1000}s before next batch...`)
+    await new Promise(r => setTimeout(r, WAIT_BETWEEN_BATCHES))
+  }
+
+  console.log("✅ Completed batch run.")
+  if (testMode) return new Response("Done")
+}
+
+// ========== CREATE TABLES IF NOT EXIST ==========
+async function ensureTables(env) {
+  const db = env.DB
+
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS anime (
       id INTEGER PRIMARY KEY,
       title TEXT,
-      altTitle TEXT,
-      japanese TEXT,
       synopsis TEXT,
       image TEXT,
-      status TEXT,
-      totalEpisodes TEXT,
+      rating TEXT,
       type TEXT,
-      releaseDate TEXT,
-      subOrDub TEXT,
-      url TEXT
+      status TEXT
     );
-  `;
-  await env.DB.exec(createAnimeTable);
-  console.log("✅ Anime table ready");
-}
+  `)
 
-async function saveAnime(env, a) {
-  const stmt = `
-    INSERT OR REPLACE INTO anime 
-    (id, title, altTitle, japanese, synopsis, image, status, totalEpisodes, type, releaseDate, subOrDub, url)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `;
-  await env.DB.prepare(stmt)
-    .bind(
-      a.id,
-      a.title,
-      a.altTitle,
-      a.japanese,
-      a.synopsis,
-      a.image,
-      a.status,
-      a.totalEpisodes,
-      a.type,
-      a.releaseDate,
-      a.subOrDub,
-      a.url
-    )
-    .run();
-}
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS meta (
+      name TEXT PRIMARY KEY,
+      last_id INTEGER DEFAULT 1
+    );
+  `)
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+  // initialize meta
+  const check = await db.prepare("SELECT * FROM meta WHERE name = 'progress'").first()
+  if (!check) {
+    await db.prepare("INSERT INTO meta (name, last_id) VALUES ('progress', 1)").run()
+  }
 }
