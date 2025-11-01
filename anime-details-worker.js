@@ -21,7 +21,7 @@ export default {
 
 const BASE_URL = "https://erenworld-proxy.onrender.com/api/v1/anime/one-piece-"
 const BATCH_LIMIT = 50
-const DELAY = 2000 // 2 seconds delay between each fetch
+const DELAY = 2000
 
 async function safeRun(env, test = false) {
   console.log(`🚀 Starting anime scraper (test mode: ${test})`)
@@ -32,13 +32,11 @@ async function safeRun(env, test = false) {
       throw new Error("Database not available - check DB binding")
     }
 
-    // Initialize database with retry
     const dbReady = await initTables(db)
     if (!dbReady) {
       throw new Error("Failed to initialize database")
     }
 
-    // Get progress with error handling
     const meta = await db.prepare("SELECT last_id FROM meta WHERE name = 'progress'").first()
     let startId = meta?.last_id || 1
     
@@ -49,7 +47,6 @@ async function safeRun(env, test = false) {
     }
 
     const endId = startId + BATCH_LIMIT - 1
-
     console.log(`📊 Progress: Fetching anime ${startId} → ${endId}`)
 
     let successCount = 0
@@ -61,7 +58,6 @@ async function safeRun(env, test = false) {
         const ok = await fetchAndSaveAnime(db, id)
         if (ok) {
           successCount++
-          // Update progress after each successful save
           await db.prepare(`UPDATE meta SET last_id = ? WHERE name = 'progress'`).bind(id).run()
         } else {
           failCount++
@@ -73,7 +69,6 @@ async function safeRun(env, test = false) {
         failedIds.push(id)
       }
 
-      // Add delay between requests (except for test mode with small batches)
       if (!test || id % 5 === 0) {
         await sleep(DELAY)
       }
@@ -111,16 +106,51 @@ async function initTables(db) {
     try {
       console.log("🔄 Initializing database tables...")
       
-      // Create anime table
+      // Main anime table with EXACT field mapping
       const animeTable = await db.prepare(`
         CREATE TABLE IF NOT EXISTS anime (
+          -- Basic Info
           id INTEGER PRIMARY KEY,
-          title TEXT,
-          synopsis TEXT,
-          image TEXT,
+          api_id TEXT UNIQUE,
+          title TEXT NOT NULL,
+          alternative_title TEXT,
+          japanese_title TEXT,
+          
+          -- Media Info
+          poster_url TEXT,
           rating TEXT,
           type TEXT,
+          is18Plus BOOLEAN DEFAULT FALSE,
+          duration TEXT,
           status TEXT,
+          MAL_score REAL,
+          
+          -- Episode Info
+          episodes_sub INTEGER,
+          episodes_dub INTEGER,
+          episodes_total INTEGER,
+          
+          -- Content Info
+          synopsis TEXT,
+          synonyms TEXT,
+          genres TEXT,
+          
+          -- Release Info
+          aired_from TEXT,
+          aired_to TEXT,
+          premiered TEXT,
+          
+          -- Production Info
+          studios TEXT,
+          producers TEXT,
+          
+          -- Additional API Fields
+          moreSeasons TEXT,
+          related TEXT,
+          mostPopular TEXT,
+          recommended TEXT,
+          
+          -- Timestamps
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
@@ -165,7 +195,6 @@ async function initTables(db) {
         return false
       }
       
-      // Wait before retry
       await sleep(1000 * retryCount)
     }
   }
@@ -176,9 +205,8 @@ async function fetchAndSaveAnime(db, id) {
   console.log(`🔍 Fetching anime ID: ${id}`)
 
   try {
-    // Fetch with timeout
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 10000) // 10 second timeout
+    const timeout = setTimeout(() => controller.abort(), 15000)
     
     const res = await fetch(url, { 
       cf: { cacheTtl: 0 },
@@ -204,12 +232,6 @@ async function fetchAndSaveAnime(db, id) {
       return false
     }
 
-    // Validate response structure
-    if (!json || typeof json !== 'object') {
-      console.warn(`⚠️ Invalid response format for ${id}`)
-      return false
-    }
-
     // Navigate nested data structure
     const animeData = json?.data?.data
     if (!animeData) {
@@ -222,18 +244,46 @@ async function fetchAndSaveAnime(db, id) {
       return false
     }
 
-    // Save to database
+    // Extract nested data safely
+    const episodes = animeData.episodes || {}
+    const aired = animeData.aired || {}
+    
+    // Save COMPLETE data to database with EXACT field mapping
     const result = await db.prepare(`
-      INSERT OR REPLACE INTO anime (id, title, synopsis, image, rating, type, status, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      INSERT OR REPLACE INTO anime (
+        id, api_id, title, alternative_title, japanese_title, poster_url, rating, 
+        type, is18Plus, duration, status, MAL_score, episodes_sub, episodes_dub, 
+        episodes_total, synopsis, synonyms, genres, aired_from, aired_to, premiered, 
+        studios, producers, moreSeasons, related, mostPopular, recommended
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
-      id,
+      id,                                // Your numeric primary key
+      animeData.id || "",                // API's string ID
       animeData.title || "",
-      animeData.synopsis || "",
-      animeData.poster || "", // Using 'poster' field from API
+      animeData.alternativeTitle || "",
+      animeData.japanese || "",
+      animeData.poster || "",
       animeData.rating || "",
       animeData.type || "",
-      animeData.status || ""
+      animeData.is18Plus ? 1 : 0,
+      animeData.duration || "",
+      animeData.status || "",
+      parseFloat(animeData.MAL_score) || 0,
+      episodes.sub || 0,
+      episodes.dub || 0,
+      episodes.eps || 0,
+      animeData.synopsis || "",
+      animeData.synonyms || "",
+      JSON.stringify(animeData.genres || []),
+      aired.from || "",
+      aired.to || "",
+      animeData.premiered || "",
+      animeData.studios || "",
+      JSON.stringify(animeData.producers || []),
+      JSON.stringify(animeData.moreSeasons || []),
+      JSON.stringify(animeData.related || []),
+      JSON.stringify(animeData.mostPopular || []),
+      JSON.stringify(animeData.recommended || [])
     ).run()
 
     if (!result.success) {
@@ -241,7 +291,15 @@ async function fetchAndSaveAnime(db, id) {
       return false
     }
 
-    console.log(`✅ Saved: ${animeData.title} (ID ${id})`)
+    // Log some stats about the saved data
+    const moreSeasonsCount = animeData.moreSeasons?.length || 0
+    const relatedCount = animeData.related?.length || 0
+    const popularCount = animeData.mostPopular?.length || 0
+    const recommendedCount = animeData.recommended?.length || 0
+    
+    console.log(`✅ Saved: ${animeData.title} (ID ${id}, MAL: ${animeData.MAL_score || 'N/A'})`)
+    console.log(`   📊 Stats: ${moreSeasonsCount} seasons, ${relatedCount} related, ${popularCount} popular, ${recommendedCount} recommended`)
+
     return true
 
   } catch (err) {
@@ -254,18 +312,31 @@ async function fetchAndSaveAnime(db, id) {
   }
 }
 
-// Status endpoint handler
 async function getStatus(env) {
   try {
     const db = env.DB
     const animeCount = await db.prepare("SELECT COUNT(*) as count FROM anime").first()
     const progress = await db.prepare("SELECT last_id FROM meta WHERE name = 'progress'").first()
+    const stats = await db.prepare(`
+      SELECT 
+        COUNT(*) as total,
+        AVG(MAL_score) as avg_score,
+        SUM(episodes_total) as total_episodes,
+        COUNT(DISTINCT studios) as unique_studios
+      FROM anime 
+      WHERE MAL_score > 0
+    `).first()
     
     const status = {
       animeCount: animeCount?.count || 0,
       lastProcessedId: progress?.last_id || 0,
       nextBatchStart: (progress?.last_id || 0) + 1,
-      batchSize: BATCH_LIMIT
+      batchSize: BATCH_LIMIT,
+      statistics: {
+        averageScore: stats?.avg_score ? parseFloat(stats.avg_score).toFixed(2) : 0,
+        totalEpisodes: stats?.total_episodes || 0,
+        uniqueStudios: stats?.unique_studios || 0
+      }
     }
     
     return new Response(JSON.stringify(status, null, 2), {
@@ -280,7 +351,6 @@ async function getStatus(env) {
   }
 }
 
-// Reset endpoint handler (use with caution)
 async function resetDatabase(env) {
   try {
     const db = env.DB
