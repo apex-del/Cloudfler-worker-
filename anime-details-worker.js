@@ -1,18 +1,3 @@
-export default {
-  async scheduled(event, env) {
-    await safeRun(env)
-  },
-
-  async fetch(request, env) {
-    const url = new URL(request.url)
-    if (url.pathname === "/test") {
-      await safeRun(env, true)
-      return new Response("✅ Test run complete", { status: 200 })
-    }
-    return new Response("Not found", { status: 404 })
-  },
-}
-
 const BASE_URL = "https://erenworld-proxy.onrender.com/api/v1/anime/one-piece-"
 const BATCH_LIMIT = 50
 const DELAY = 2000 // 2 seconds delay between each fetch
@@ -90,26 +75,28 @@ async function fetchAndSaveAnime(db, id) {
       return false
     }
 
-    const data = json?.data || {}
-    if (!data.title) {
+    // FIX: Correct data access - navigate through the nested structure
+    const animeData = json?.data?.data
+    if (!animeData?.title) {
       console.warn(`⚠️ Missing data for ${id}`)
       return false
     }
 
+    // FIX: Use 'poster' instead of 'image' and access correct nested data
     await db.prepare(`
       INSERT OR REPLACE INTO anime (id, title, synopsis, image, rating, type, status)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).bind(
       id,
-      data.title || "",
-      data.synopsis || "",
-      data.image || "",
-      data.rating || "",
-      data.type || "",
-      data.status || ""
+      animeData.title || "",
+      animeData.synopsis || "",
+      animeData.poster || "", // ← Changed from data.image to data.poster
+      animeData.rating || "",
+      animeData.type || "",
+      animeData.status || ""
     ).run()
 
-    console.log(`✅ Saved: ${data.title} (ID ${id})`)
+    console.log(`✅ Saved: ${animeData.title} (ID ${id})`)
     return true
   } catch (err) {
     console.error(`❌ Failed ${id}: ${err.message}`)
@@ -120,3 +107,18 @@ async function fetchAndSaveAnime(db, id) {
 function sleep(ms) {
   return new Promise(res => setTimeout(res, ms))
 }
+
+export default {
+  async scheduled(event, env) {
+    await safeRun(env)
+  },
+
+  async fetch(request, env) {
+    const url = new URL(request.url)
+    if (url.pathname === "/test") {
+      await safeRun(env, true)
+      return new Response("✅ Test run complete", { status: 200 })
+    }
+    return new Response("Not found", { status: 404 })
+  },
+                  }
